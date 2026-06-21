@@ -29,8 +29,14 @@ func Remove(name string) error { return ErrUnsupported }
 // LoadTable is unsupported off Linux.
 func LoadTable(name string, targets []Target) error { return ErrUnsupported }
 
+// LoadTableReadOnly is unsupported off Linux.
+func LoadTableReadOnly(name string, targets []Target) error { return ErrUnsupported }
+
 // CreateWithTable is unsupported off Linux.
 func CreateWithTable(name string, targets []Target) error { return ErrUnsupported }
+
+// CreateReadOnlyWithTable is unsupported off Linux.
+func CreateReadOnlyWithTable(name string, targets []Target) error { return ErrUnsupported }
 
 // Suspend is unsupported off Linux.
 func Suspend(name string) error { return ErrUnsupported }
@@ -49,6 +55,9 @@ func Status(name string) ([]Target, error) { return nil, ErrUnsupported }
 
 // List is unsupported off Linux.
 func List() ([]Device, error) { return nil, ErrUnsupported }
+
+// Message is unsupported off Linux.
+func Message(name string, sector uint64, msg string) (string, error) { return "", ErrUnsupported }
 
 // Linear constructs a "linear" Target. It works on every platform since it only
 // builds a value; only the kernel operations are Linux-only.

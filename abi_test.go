@@ -58,6 +58,20 @@ func TestDMIoctlNumbers(t *testing.T) {
 	}
 }
 
+// TestDMTargetMsgNumber pins DM_TARGET_MSG specifically: it is the request
+// number thin provisioning rides on, so it gets its own assertion in addition
+// to the table above. cmd ordinal is 14 (DM_TARGET_MSG_CMD), giving
+// base 0xc138fd00 + 14.
+func TestDMTargetMsgNumber(t *testing.T) {
+	const want = uintptr(0xc138fd00) + 14
+	if DM_TARGET_MSG != want {
+		t.Errorf("DM_TARGET_MSG = %#x, want %#x", DM_TARGET_MSG, want)
+	}
+	if dmTargetMsgCmd != 14 {
+		t.Errorf("dmTargetMsgCmd = %d, want 14", dmTargetMsgCmd)
+	}
+}
+
 // TestStructSizes pins the on-wire struct sizes against the kernel C layout.
 func TestStructSizes(t *testing.T) {
 	if got := abiSizeofDMIoctl; got != 312 {
@@ -65,6 +79,14 @@ func TestStructSizes(t *testing.T) {
 	}
 	if got := abiSizeofDMTargetSpec; got != 40 {
 		t.Errorf("sizeof(struct dm_target_spec) = %d, want 40", got)
+	}
+	// struct dm_target_msg is {u64 sector; char message[]}; the fixed head is
+	// the 8-byte sector, with message[] at offset 8.
+	if got := abiSizeofDMTargetMsg; got != 8 {
+		t.Errorf("sizeof(struct dm_target_msg head) = %d, want 8", got)
+	}
+	if dmTargetMsgHeadSize != 8 {
+		t.Errorf("dmTargetMsgHeadSize = %d, want 8 (offset of message[])", dmTargetMsgHeadSize)
 	}
 	// Go pads struct{u64;u32} up to 16, but the kernel places the flexible
 	// name[] member at offset 12; parseNameList uses dmNameListHeadSize for
