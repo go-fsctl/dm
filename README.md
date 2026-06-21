@@ -60,13 +60,40 @@ func main() {
 ```
 
 `Target` is intentionally generic, so any kernel target works by supplying the
-right `Type` and `Params`:
+right `Type` and `Params`. For the common targets there are typed constructors
+that emit the exact param string the kernel expects, so you do not have to
+remember the grammar:
 
 ```go
-dm.Target{SectorStart: 0, Length: n, Type: "striped",  Params: "2 256 /dev/sda 0 /dev/sdb 0"}
-dm.Target{SectorStart: 0, Length: n, Type: "snapshot", Params: "/dev/origin /dev/cow P 8"}
-dm.Target{SectorStart: 0, Length: n, Type: "crypt",    Params: "aes-xts-plain64 <key> 0 /dev/loop0 0"}
+dm.Linear(0, n, "/dev/loop0", 0)                      // linear: <dev> <offset>
+dm.Striped(0, n, 256, []dm.StripeDev{                 // striped: <num> <chunk> (<dev> <off>)...
+	{Dev: "/dev/loop0", Offset: 0},
+	{Dev: "/dev/loop1", Offset: 0},
+})                                                    //   => "2 256 /dev/loop0 0 /dev/loop1 0"
+dm.Zero(0, n)                                         // zero:  reads return zeros, writes dropped
+dm.Error(0, n)                                        // error: all I/O fails
+dm.Snapshot(0, n, "/dev/origin", "/dev/cow", true, 8) // snapshot: <origin> <cow> <P|N> <chunk>
+dm.SnapshotOrigin(0, n, "/dev/origin")                // snapshot-origin: <origin>
+dm.Crypt(0, n, "aes-xts-plain64", key, 0, "/dev/loop0", 0, nil)
+	// crypt: <cipher> <hexkey> <iv> <dev> <off> [<#opt> <opt>...]
+	// key is raw bytes; Crypt hex-encodes it as the dm-crypt table format requires.
 ```
+
+Each constructor only assembles the table line — the kernel does the striping,
+copy-on-write and crypto. `CreateWithTable(name, targets)` is a one-shot
+convenience that does `Create` + `LoadTable` + `Resume` (and cleans up on
+failure):
+
+```go
+err := dm.CreateWithTable("crypt0", []dm.Target{
+	dm.Crypt(0, 131072, "aes-xts-plain64", key, 0, "/dev/loop0", 0, nil),
+})
+```
+
+`SnapshotStatus(name)` reads a snapshot device's runtime status and decodes the
+`used/total` exception-store usage (and the metadata-sectors word) into a
+`SnapStatus`; `ParseSnapStatus` is exposed separately for parsing a status
+string directly.
 
 ## API
 
@@ -75,6 +102,7 @@ dm.Target{SectorStart: 0, Length: n, Type: "crypt",    Params: "aes-xts-plain64 
 | `Available() bool`                       | —                | `/dev/mapper/control` openable |
 | `Version() (DMVersion, error)`           | `DM_VERSION`      | negotiate interface version |
 | `Create(name, uuid string) error`        | `DM_DEV_CREATE`   | create empty suspended device |
+| `CreateWithTable(name, []Target) error`  | create+load+resume | one-shot bring-up (cleans up on failure) |
 | `LoadTable(name, []Target) error`        | `DM_TABLE_LOAD`   | load table into inactive slot |
 | `Suspend(name string) error`             | `DM_DEV_SUSPEND`  | suspend IO (`DM_SUSPEND_FLAG` set) |
 | `Resume(name string) error`              | `DM_DEV_SUSPEND`  | resume / activate (flag clear) |
@@ -84,8 +112,10 @@ dm.Target{SectorStart: 0, Length: n, Type: "crypt",    Params: "aes-xts-plain64 
 | `List() ([]Device, error)`               | `DM_LIST_DEVICES` | enumerate all dm devices |
 | `Remove(name string) error`              | `DM_DEV_REMOVE`   | remove device, destroy tables |
 
-`Linear(start, length, dev, devOffset)` is a convenience constructor for the
-`"linear"` target.
+`Linear`, `Striped`, `Zero`, `Error`, `Snapshot`, `SnapshotOrigin` and `Crypt`
+are convenience constructors for the corresponding kernel targets; they build a
+`Target` value and so work on every platform. `SnapshotStatus(name)` /
+`ParseSnapStatus(s)` decode a snapshot's exception-store usage.
 
 On non-Linux platforms every kernel operation returns `ErrUnsupported`, while
 the ABI definitions and the target-spec (de)serialization in `abi.go` remain

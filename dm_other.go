@@ -29,6 +29,9 @@ func Remove(name string) error { return ErrUnsupported }
 // LoadTable is unsupported off Linux.
 func LoadTable(name string, targets []Target) error { return ErrUnsupported }
 
+// CreateWithTable is unsupported off Linux.
+func CreateWithTable(name string, targets []Target) error { return ErrUnsupported }
+
 // Suspend is unsupported off Linux.
 func Suspend(name string) error { return ErrUnsupported }
 
