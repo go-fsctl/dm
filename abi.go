@@ -219,6 +219,28 @@ type structDMTargetSpec struct {
 	TargetType  [dmMaxTypeName]byte
 }
 
+// structDMTargetMsg mirrors struct dm_target_msg from dm-ioctl.h. It is the
+// payload for DM_TARGET_MSG: a sector number identifying which target in the
+// table the message is addressed to, followed by a NUL-terminated message
+// string. The C struct is
+//
+//	struct dm_target_msg {
+//		__u64 sector;   // device sector the message applies to
+//		char  message[0];
+//	};
+//
+// i.e. an 8-byte sector immediately followed by the flexible message[] array.
+// Like dm_name_list its Go size (8) happens to equal the C offset of the
+// flexible member, but we use dmTargetMsgHeadSize explicitly to make the
+// dependence on the C layout (not Go's) clear.
+type structDMTargetMsg struct {
+	Sector uint64
+}
+
+// dmTargetMsgHeadSize is the offset of the flexible message[] member within
+// struct dm_target_msg in C: immediately after the u64 sector, at byte 8.
+const dmTargetMsgHeadSize = 8
+
 // structDMNameList mirrors the fixed head of struct dm_name_list (dm-ioctl.h).
 // The variable-length name[] and optional trailing event_nr/flags/uuid follow
 // at runtime and are parsed by hand in the Linux implementation.
@@ -246,6 +268,7 @@ var (
 	abiSizeofDMIoctl      = unsafe.Sizeof(structDMIoctl{})
 	abiSizeofDMTargetSpec = unsafe.Sizeof(structDMTargetSpec{})
 	abiSizeofDMNameList   = unsafe.Sizeof(structDMNameList{})
+	abiSizeofDMTargetMsg  = unsafe.Sizeof(structDMTargetMsg{})
 )
 
 // align8 rounds n up to the next multiple of 8, matching the alignment

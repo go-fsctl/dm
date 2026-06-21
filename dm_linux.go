@@ -165,6 +165,19 @@ func Remove(name string) error {
 // LoadTable loads targets into the device's inactive table slot
 // (DM_TABLE_LOAD). The device is not activated until Resume is called.
 func LoadTable(name string, targets []Target) error {
+	return loadTable(name, targets, 0)
+}
+
+// LoadTableReadOnly is LoadTable with the device marked read-only
+// (DM_READONLY_FLAG). Some targets require it: dm-verity, for instance, refuses
+// to load onto a writable device ("Device must be readonly"). After this the
+// device is read-only for its lifetime; a later writable LoadTable would need a
+// fresh device.
+func LoadTableReadOnly(name string, targets []Target) error {
+	return loadTable(name, targets, DM_READONLY_FLAG)
+}
+
+func loadTable(name string, targets []Target, flags uint32) error {
 	if len(targets) == 0 {
 		return errors.New("dm: LoadTable requires at least one target")
 	}
@@ -178,6 +191,7 @@ func LoadTable(name string, targets []Target) error {
 	}
 	h := buf.hdr()
 	h.TargetCount = uint32(len(targets))
+	h.Flags = flags
 	copy(buf.b[hdrSize:], payload)
 	if err := buf.ioctl(DM_TABLE_LOAD); err != nil {
 		return fmt.Errorf("dm: DM_TABLE_LOAD %q: %w", name, err)
@@ -197,13 +211,28 @@ func LoadTable(name string, targets []Target) error {
 //	dm.LoadTable(name, targets)
 //	dm.Resume(name)
 func CreateWithTable(name string, targets []Target) error {
+	return createWithTable(name, targets, false)
+}
+
+// CreateReadOnlyWithTable is CreateWithTable for targets that must be loaded
+// read-only (notably dm-verity): it does Create + LoadTableReadOnly + Resume,
+// cleaning up the half-built device on failure.
+func CreateReadOnlyWithTable(name string, targets []Target) error {
+	return createWithTable(name, targets, true)
+}
+
+func createWithTable(name string, targets []Target, readOnly bool) error {
 	if len(targets) == 0 {
 		return errors.New("dm: CreateWithTable requires at least one target")
 	}
 	if err := Create(name, ""); err != nil {
 		return err
 	}
-	if err := LoadTable(name, targets); err != nil {
+	load := LoadTable
+	if readOnly {
+		load = LoadTableReadOnly
+	}
+	if err := load(name, targets); err != nil {
 		_ = Remove(name)
 		return err
 	}
@@ -304,6 +333,42 @@ func List() ([]Device, error) {
 		return parseNameList(buf.b, int(h.DataStart))
 	}
 	return nil, errors.New("dm: DM_LIST_DEVICES: buffer kept overflowing")
+}
+
+// Message sends a target message to the named device (DM_TARGET_MSG). The
+// payload is a struct dm_target_msg — an 8-byte sector that selects which
+// target in the table the message is delivered to, immediately followed by the
+// NUL-terminated message string. sector is usually 0 to address the single
+// target of a one-row table (e.g. a thin-pool).
+//
+// Target messages are how stateful targets are driven at runtime without
+// reloading their table: the thin-pool target, for instance, creates and
+// deletes thin volumes and snapshots through messages such as
+// "create_thin 0", "create_snap 1 0" and "delete 0". The kernel may write a
+// textual reply into the buffer and set DM_DATA_OUT_FLAG; Message returns that
+// reply (empty when there is none).
+func Message(name string, sector uint64, msg string) (string, error) {
+	// Payload: u64 sector + message bytes + NUL, the whole thing padded so the
+	// buffer the kernel sees is comfortably sized.
+	payloadCap := align8(dmTargetMsgHeadSize + len(msg) + 1)
+	buf := newBuffer(payloadCap)
+	if err := buf.setName(name); err != nil {
+		return "", err
+	}
+	// dm_target_msg.sector at data_start, message[] right after it.
+	hdr := (*structDMTargetMsg)(unsafe.Pointer(&buf.b[hdrSize]))
+	hdr.Sector = sector
+	copy(buf.b[hdrSize+dmTargetMsgHeadSize:], msg) // trailing byte stays 0 => NUL-terminated
+	if err := buf.ioctl(DM_TARGET_MSG); err != nil {
+		return "", fmt.Errorf("dm: DM_TARGET_MSG %q %q: %w", name, msg, err)
+	}
+	// If the target produced a reply the kernel sets DM_DATA_OUT_FLAG and writes
+	// a NUL-terminated string starting at data_start.
+	h := buf.hdr()
+	if h.Flags&DM_DATA_OUT_FLAG != 0 && int(h.DataStart) < len(buf.b) {
+		return cstr(buf.b[h.DataStart:]), nil
+	}
+	return "", nil
 }
 
 // Linear is a convenience constructor for a "linear" Target mapping length

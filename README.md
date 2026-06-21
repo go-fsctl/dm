@@ -77,6 +77,14 @@ dm.SnapshotOrigin(0, n, "/dev/origin")                // snapshot-origin: <origi
 dm.Crypt(0, n, "aes-xts-plain64", key, 0, "/dev/loop0", 0, nil)
 	// crypt: <cipher> <hexkey> <iv> <dev> <off> [<#opt> <opt>...]
 	// key is raw bytes; Crypt hex-encodes it as the dm-crypt table format requires.
+dm.ThinPool(0, n, "/dev/meta", "/dev/data", 128, 1024, nil)
+	// thin-pool: <meta> <data> <data_block_sectors> <low_water_blocks> [<#opt> <opt>...]
+dm.Thin(0, n, "/dev/mapper/pool", 0, "")
+	// thin: <pool> <dev_id> [<external_origin>]
+dm.Verity(0, n, dm.VerityParams{Version: 1, DataDev: "/dev/data", HashDev: "/dev/hash",
+	DataBlockSize: 4096, HashBlockSize: 4096, NumDataBlocks: n/8, HashStartBlock: 1,
+	Algorithm: "sha256", RootDigest: root, Salt: salt})
+	// verity: <ver> <data> <hash> <dbs> <hbs> <ndb> <hsb> <algo> <root> <salt> [<#opt> <opt>...]
 ```
 
 Each constructor only assembles the table line — the kernel does the striping,
@@ -95,6 +103,57 @@ err := dm.CreateWithTable("crypt0", []dm.Target{
 `SnapStatus`; `ParseSnapStatus` is exposed separately for parsing a status
 string directly.
 
+### Thin provisioning
+
+A thin pool hands out data blocks on demand to thin volumes and snapshots, all
+identified by numeric device ids. The pool's metadata device must be **zeroed**
+before first use (the kernel treats zeroed metadata as "format me"). Thin
+volumes and snapshots are created *inside* the pool by sending it target
+messages (the `DM_TARGET_MSG` ioctl), not by reloading its table:
+
+```go
+// 1. Pool over a zeroed metadata device and a data device, 64 KiB blocks.
+dm.CreateWithTable("pool", []dm.Target{
+	dm.ThinPool(0, dataSectors, "/dev/meta", "/dev/data", 128, 1024, nil),
+})
+// 2. Create thin volume id 0 inside the pool (Message: "create_thin 0").
+dm.ThinPoolCreateThin("pool", 0)
+// 3. Surface it as a block device, then format/mount /dev/mapper/vol0.
+dm.CreateWithTable("vol0", []dm.Target{dm.Thin(0, volSectors, "/dev/mapper/pool", 0, "")})
+// 4. Snapshot id 0 as id 1 (Message: "create_snap 1 0"); surface as another thin.
+dm.ThinPoolCreateSnap("pool", 1, 0)
+dm.CreateWithTable("snap0", []dm.Target{dm.Thin(0, volSectors, "/dev/mapper/pool", 1, "")})
+// 5. dm.ThinPoolDeleteThin("pool", 1) removes a thin/snap by id.
+```
+
+`Message(name, sector, msg)` is the general `DM_TARGET_MSG` wrapper (sector is
+usually 0 to address a single-row table); the `ThinPool*` helpers above are thin
+wrappers over it. `ThinPoolStatus(name)` / `ThinStatus(name)` decode the pool's
+`used/total` data and metadata blocks and a thin volume's mapped sectors.
+
+### dm-verity
+
+`Verity(VerityParams)` builds a read-only integrity-checked mapping over a data
+device and a precomputed Merkle hash tree (e.g. from `veritysetup format`). The
+device **must be created read-only**, so use `CreateReadOnlyWithTable` (or
+`LoadTableReadOnly`):
+
+```go
+dm.CreateReadOnlyWithTable("verity0", []dm.Target{
+	dm.Verity(0, dataSectors, dm.VerityParams{
+		Version: 1, DataDev: "/dev/data", HashDev: "/dev/hash",
+		DataBlockSize: 4096, HashBlockSize: 4096,
+		NumDataBlocks: nBlocks, HashStartBlock: 1, // block 0 holds veritysetup's superblock
+		Algorithm: "sha256", RootDigest: rootHex, Salt: saltHex,
+	}),
+})
+```
+
+Every block read is verified against the root digest; a mismatch returns EIO and
+flips `ParseVerityStatus` from `"V"` to `"C"`. Optional `Opts` (e.g.
+`ignore_zero_blocks`) and forward error correction (`VerityFEC`) are folded into
+the table's optional-argument list.
+
 ## API
 
 | Function | ioctl | Purpose |
@@ -103,7 +162,10 @@ string directly.
 | `Version() (DMVersion, error)`           | `DM_VERSION`      | negotiate interface version |
 | `Create(name, uuid string) error`        | `DM_DEV_CREATE`   | create empty suspended device |
 | `CreateWithTable(name, []Target) error`  | create+load+resume | one-shot bring-up (cleans up on failure) |
+| `CreateReadOnlyWithTable(name, []Target) error` | create+load+resume | as above but read-only (dm-verity) |
 | `LoadTable(name, []Target) error`        | `DM_TABLE_LOAD`   | load table into inactive slot |
+| `LoadTableReadOnly(name, []Target) error` | `DM_TABLE_LOAD`  | load read-only table (dm-verity) |
+| `Message(name, sector, msg) (string, error)` | `DM_TARGET_MSG` | send a target message (thin create/delete/snap) |
 | `Suspend(name string) error`             | `DM_DEV_SUSPEND`  | suspend IO (`DM_SUSPEND_FLAG` set) |
 | `Resume(name string) error`              | `DM_DEV_SUSPEND`  | resume / activate (flag clear) |
 | `Info(name string) (DevInfo, error)`     | `DM_DEV_STATUS`   | dev_t, open count, flags, target count |
@@ -112,10 +174,12 @@ string directly.
 | `List() ([]Device, error)`               | `DM_LIST_DEVICES` | enumerate all dm devices |
 | `Remove(name string) error`              | `DM_DEV_REMOVE`   | remove device, destroy tables |
 
-`Linear`, `Striped`, `Zero`, `Error`, `Snapshot`, `SnapshotOrigin` and `Crypt`
-are convenience constructors for the corresponding kernel targets; they build a
-`Target` value and so work on every platform. `SnapshotStatus(name)` /
-`ParseSnapStatus(s)` decode a snapshot's exception-store usage.
+`Linear`, `Striped`, `Zero`, `Error`, `Snapshot`, `SnapshotOrigin`, `Crypt`,
+`ThinPool`, `Thin` and `Verity` are convenience constructors for the
+corresponding kernel targets; they build a `Target` value and so work on every
+platform. `SnapshotStatus`, `ThinPoolStatus`, `ThinStatus` (and the matching
+`Parse*Status` functions) decode the targets' runtime status; the `ThinPool*`
+helpers wrap `Message` for thin/snapshot lifecycle.
 
 On non-Linux platforms every kernel operation returns `ErrUnsupported`, while
 the ABI definitions and the target-spec (de)serialization in `abi.go` remain
