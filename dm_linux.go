@@ -185,6 +185,35 @@ func LoadTable(name string, targets []Target) error {
 	return nil
 }
 
+// CreateWithTable is the one-shot convenience that performs the full bring-up
+// of a device in a single call: Create (empty suspended device), LoadTable (the
+// given targets into the inactive slot) and Resume (promote to active and
+// enable IO). On any failure after the device is created it removes the
+// half-built device so it does not leak, and returns the underlying error.
+//
+// It is equivalent to:
+//
+//	dm.Create(name, "")
+//	dm.LoadTable(name, targets)
+//	dm.Resume(name)
+func CreateWithTable(name string, targets []Target) error {
+	if len(targets) == 0 {
+		return errors.New("dm: CreateWithTable requires at least one target")
+	}
+	if err := Create(name, ""); err != nil {
+		return err
+	}
+	if err := LoadTable(name, targets); err != nil {
+		_ = Remove(name)
+		return err
+	}
+	if err := Resume(name); err != nil {
+		_ = Remove(name)
+		return err
+	}
+	return nil
+}
+
 // Suspend suspends IO to the device (DM_DEV_SUSPEND with DM_SUSPEND_FLAG set).
 func Suspend(name string) error {
 	if _, err := run(DM_DEV_SUSPEND, name, DM_SUSPEND_FLAG); err != nil {
