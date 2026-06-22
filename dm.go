@@ -88,6 +88,15 @@ type Device struct {
 	Dev  uint64
 }
 
+// TargetVersion is one entry returned by ListVersions: the registered name of a
+// kernel device-mapper target type ("linear", "striped", "raid", ...) and the
+// version triple of the kernel module implementing it. It is the decoded form
+// of one struct dm_target_versions record.
+type TargetVersion struct {
+	Name    string
+	Version DMVersion
+}
+
 // Version holds a device-mapper interface version triple {major, minor, patch}.
 type DMVersion struct {
 	Major uint32

@@ -27,6 +27,13 @@
 //	dmtest thinstatus <name>
 //	dmtest message <name> <sector> <msg...>
 //	dmtest verity  <name> <ver> <datadev> <hashdev> <dbs> <hbs> <ndb> <hsb> <algo> <root> <salt> <sectors> [opt...]
+//	dmtest delay   <name> <dev> <off> <delay-ms> <sectors> [<wdev> <woff> <wdelay> [<fdev> <foff> <fdelay>]]
+//	dmtest flakey  <name> <dev> <off> <up> <down> <sectors> [feature...]
+//	dmtest raid    <name> <type> <sectors> <#params> <params...> <#devs> <meta0> <data0> ...
+//	dmtest cache   <name> <meta> <cache> <origin> <block> <policy> <sectors> [feature...]
+//	dmtest integrity <name> <dev> <reserved> <tagsize> <mode> <sectors> [opt...]
+//	dmtest versions
+//	dmtest devwait <name> <eventnr>
 //	dmtest info    <name>
 //	dmtest table   <name>
 //	dmtest status  <name>
@@ -66,6 +73,8 @@ var (
 	tableStatus             = dm.TableStatus
 	list                    = dm.List
 	remove                  = dm.Remove
+	listVersions            = dm.ListVersions
+	devWait                 = dm.DevWait
 
 	osExit           = os.Exit
 	stdout io.Writer = os.Stdout
@@ -440,6 +449,195 @@ func run(args []string) int {
 		}
 		fmt.Fprintf(stdout, "created+resumed %s: %s\n", args[2], tgt.String())
 
+	case "delay":
+		// delay <name> <dev> <off> <delay-ms> <sectors> [<wdev> <woff> <wdelay> [<fdev> <foff> <fdelay>]]
+		if !need(7) {
+			return usage()
+		}
+		off, rc, bad := mustUint(args[4])
+		if bad {
+			return rc
+		}
+		d, rc, bad := mustUint(args[5])
+		if bad {
+			return rc
+		}
+		sectors, rc, bad := mustUint(args[6])
+		if bad {
+			return rc
+		}
+		read := dm.DelayLeg{Dev: args[3], Offset: off, Delay: d}
+		var write, flush *dm.DelayLeg
+		if len(args) >= 10 {
+			woff, rc, bad := mustUint(args[8])
+			if bad {
+				return rc
+			}
+			wd, rc, bad := mustUint(args[9])
+			if bad {
+				return rc
+			}
+			write = &dm.DelayLeg{Dev: args[7], Offset: woff, Delay: wd}
+		}
+		if len(args) >= 13 {
+			foff, rc, bad := mustUint(args[11])
+			if bad {
+				return rc
+			}
+			fd, rc, bad := mustUint(args[12])
+			if bad {
+				return rc
+			}
+			flush = &dm.DelayLeg{Dev: args[10], Offset: foff, Delay: fd}
+		}
+		tgt := dm.Delay(0, sectors, read, write, flush)
+		if rc, bad := check(createWithTable(args[2], []dm.Target{tgt})); bad {
+			return rc
+		}
+		fmt.Fprintf(stdout, "created+resumed %s: %s\n", args[2], tgt.String())
+
+	case "flakey":
+		// flakey <name> <dev> <off> <up> <down> <sectors> [feature...]
+		if !need(8) {
+			return usage()
+		}
+		off, rc, bad := mustUint(args[4])
+		if bad {
+			return rc
+		}
+		up, rc, bad := mustUint(args[5])
+		if bad {
+			return rc
+		}
+		down, rc, bad := mustUint(args[6])
+		if bad {
+			return rc
+		}
+		sectors, rc, bad := mustUint(args[7])
+		if bad {
+			return rc
+		}
+		var features []string
+		if len(args) > 8 {
+			features = args[8:]
+		}
+		tgt := dm.Flakey(0, sectors, args[3], off, up, down, features)
+		if rc, bad := check(createWithTable(args[2], []dm.Target{tgt})); bad {
+			return rc
+		}
+		fmt.Fprintf(stdout, "created+resumed %s: %s\n", args[2], tgt.String())
+
+	case "raid":
+		// raid <name> <type> <sectors> <#params> <params...> <#devs> <meta0> <data0>...
+		if !need(7) {
+			return usage()
+		}
+		raidType := args[3]
+		sectors, rc, bad := mustUint(args[4])
+		if bad {
+			return rc
+		}
+		nParams, rc, bad := mustUint(args[5])
+		if bad {
+			return rc
+		}
+		// params occupy args[6 : 6+nParams]; then #devs; then 2*#devs device tokens.
+		pStart := 6
+		pEnd := pStart + int(nParams)
+		if len(args) < pEnd+1 {
+			return usage()
+		}
+		raidParams := append([]string(nil), args[pStart:pEnd]...)
+		nDevs, rc, bad := mustUint(args[pEnd])
+		if bad {
+			return rc
+		}
+		devStart := pEnd + 1
+		if len(args) < devStart+2*int(nDevs) {
+			return usage()
+		}
+		var devs []dm.RaidDev
+		for i := 0; i < int(nDevs); i++ {
+			devs = append(devs, dm.RaidDev{Meta: args[devStart+2*i], Data: args[devStart+2*i+1]})
+		}
+		tgt := dm.Raid(0, sectors, raidType, raidParams, devs)
+		if rc, bad := check(createWithTable(args[2], []dm.Target{tgt})); bad {
+			return rc
+		}
+		fmt.Fprintf(stdout, "created+resumed %s: %s\n", args[2], tgt.String())
+
+	case "cache":
+		// cache <name> <meta> <cache> <origin> <block> <policy> <sectors> [feat...]
+		// Feature args before the policy are not exposed here for brevity; the
+		// constructor itself supports them. Policy args are likewise omitted.
+		if !need(9) {
+			return usage()
+		}
+		block, rc, bad := mustUint(args[6])
+		if bad {
+			return rc
+		}
+		sectors, rc, bad := mustUint(args[8])
+		if bad {
+			return rc
+		}
+		var features []string
+		if len(args) > 9 {
+			features = args[9:]
+		}
+		tgt := dm.Cache(0, sectors, args[3], args[4], args[5], block, features, args[7], nil)
+		if rc, bad := check(createWithTable(args[2], []dm.Target{tgt})); bad {
+			return rc
+		}
+		fmt.Fprintf(stdout, "created+resumed %s: %s\n", args[2], tgt.String())
+
+	case "integrity":
+		// integrity <name> <dev> <reserved> <tagsize> <mode> <sectors> [opt...]
+		if !need(8) {
+			return usage()
+		}
+		reserved, rc, bad := mustUint(args[4])
+		if bad {
+			return rc
+		}
+		sectors, rc, bad := mustUint(args[7])
+		if bad {
+			return rc
+		}
+		var opts []string
+		if len(args) > 8 {
+			opts = args[8:]
+		}
+		tgt := dm.Integrity(0, sectors, args[3], reserved, args[5], args[6], opts)
+		if rc, bad := check(createWithTable(args[2], []dm.Target{tgt})); bad {
+			return rc
+		}
+		fmt.Fprintf(stdout, "created+resumed %s: %s\n", args[2], tgt.String())
+
+	case "versions":
+		tvs, err := listVersions()
+		if rc, bad := check(err); bad {
+			return rc
+		}
+		for _, tv := range tvs {
+			fmt.Fprintf(stdout, "%s %s\n", tv.Name, tv.Version)
+		}
+
+	case "devwait":
+		// devwait <name> <eventnr>
+		if !need(4) {
+			return usage()
+		}
+		ev, rc, bad := mustUint(args[3])
+		if bad {
+			return rc
+		}
+		i, err := devWait(args[2], uint32(ev))
+		if rc, bad := check(err); bad {
+			return rc
+		}
+		fmt.Fprintf(stdout, "woke %s: eventnr=%d targets=%d flags=%#x\n", i.Name, i.EventNr, i.TargetCnt, i.Flags)
+
 	case "status":
 		if !need(3) {
 			return usage()
@@ -501,7 +699,7 @@ func run(args []string) int {
 
 // usage prints the synopsis and returns the usage exit code.
 func usage() int {
-	fmt.Fprintln(stderr, "usage: dmtest <version|create|linear|striped|zero|error|snapshot|snaporigin|snapstatus|crypt|thinpool|createthin|createsnap|deletethin|thin|thinpoolstatus|thinstatus|message|verity|info|table|status|list|remove> ...")
+	fmt.Fprintln(stderr, "usage: dmtest <version|create|linear|striped|zero|error|snapshot|snaporigin|snapstatus|crypt|thinpool|createthin|createsnap|deletethin|thin|thinpoolstatus|thinstatus|message|verity|delay|flakey|raid|cache|integrity|versions|devwait|info|table|status|list|remove> ...")
 	return exitUsage
 }
 
