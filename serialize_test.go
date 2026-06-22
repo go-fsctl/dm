@@ -32,9 +32,9 @@ func TestEncodeSingleLinear(t *testing.T) {
 		t.Errorf("encoded length %d not 8-byte aligned", len(buf))
 	}
 
-	sectorStart := binary.LittleEndian.Uint64(buf[0:8])
-	length := binary.LittleEndian.Uint64(buf[8:16])
-	next := binary.LittleEndian.Uint32(buf[20:24])
+	sectorStart := binary.NativeEndian.Uint64(buf[0:8])
+	length := binary.NativeEndian.Uint64(buf[8:16])
+	next := binary.NativeEndian.Uint32(buf[20:24])
 	if sectorStart != 0 {
 		t.Errorf("sector_start = %d, want 0", sectorStart)
 	}
@@ -76,10 +76,10 @@ func TestEncodeMultiTarget(t *testing.T) {
 	// First spec Next is the size of the first record.
 	rec0 := align8(int(abiSizeofDMTargetSpec) + len("/dev/loop0 0") + 1)
 	rec1 := align8(int(abiSizeofDMTargetSpec) + len("/dev/loop1 50") + 1)
-	if got := binary.LittleEndian.Uint32(buf[20:24]); int(got) != rec0 {
+	if got := binary.NativeEndian.Uint32(buf[20:24]); int(got) != rec0 {
 		t.Errorf("spec0.next = %d, want %d", got, rec0)
 	}
-	if got := binary.LittleEndian.Uint32(buf[rec0+20 : rec0+24]); int(got) != rec1 {
+	if got := binary.NativeEndian.Uint32(buf[rec0+20 : rec0+24]); int(got) != rec1 {
 		t.Errorf("spec1.next = %d, want %d", got, rec1)
 	}
 	if len(buf) != rec0+rec1 {
@@ -91,8 +91,8 @@ func TestEncodeMultiTarget(t *testing.T) {
 	// Build a STATUS-style buffer to exercise parseTargets independently.
 	statusBuf := make([]byte, len(buf))
 	copy(statusBuf, buf)
-	binary.LittleEndian.PutUint32(statusBuf[20:24], uint32(rec0)) // offset to spec1
-	binary.LittleEndian.PutUint32(statusBuf[rec0+20:rec0+24], 0)  // last
+	binary.NativeEndian.PutUint32(statusBuf[20:24], uint32(rec0)) // offset to spec1
+	binary.NativeEndian.PutUint32(statusBuf[rec0+20:rec0+24], 0)  // last
 	out, err := parseTargets(statusBuf, 0, 2)
 	if err != nil {
 		t.Fatalf("parseTargets: %v", err)
@@ -122,13 +122,13 @@ func TestParseNameList(t *testing.T) {
 	mk := func(dev uint64, next uint32, name string) []byte {
 		raw := headSize + len(name) + 1
 		rec := make([]byte, align8(raw))
-		binary.LittleEndian.PutUint64(rec[0:8], dev)
-		binary.LittleEndian.PutUint32(rec[8:12], next)
+		binary.NativeEndian.PutUint64(rec[0:8], dev)
+		binary.NativeEndian.PutUint32(rec[8:12], next)
 		copy(rec[headSize:], name)
 		return rec
 	}
 	r0 := mk(0, 0, "vol-a")
-	binary.LittleEndian.PutUint32(r0[8:12], uint32(len(r0))) // next -> r1
+	binary.NativeEndian.PutUint32(r0[8:12], uint32(len(r0))) // next -> r1
 	r1 := mk(0, 0, "vol-b")
 	buf := append(r0, r1...)
 
