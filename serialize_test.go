@@ -141,6 +141,27 @@ func TestParseNameList(t *testing.T) {
 	}
 }
 
+// TestTargetString checks the four-column dmsetup-style rendering.
+func TestTargetString(t *testing.T) {
+	got := Target{SectorStart: 0, Length: 2048, Type: "linear", Params: "/dev/loop0 0"}.String()
+	if got != "0 2048 linear /dev/loop0 0" {
+		t.Fatalf("Target.String() = %q", got)
+	}
+}
+
+// TestDevInfoFlags exercises every DevInfo flag accessor against a value with
+// all the relevant bits set, and against the zero value.
+func TestDevInfoFlags(t *testing.T) {
+	all := DevInfo{Flags: DM_SUSPEND_FLAG | DM_READONLY_FLAG | DM_ACTIVE_PRESENT_FLAG | DM_INACTIVE_PRESENT_FLAG}
+	if !all.Suspended() || !all.ReadOnly() || !all.ActivePresent() || !all.InactivePresent() {
+		t.Fatalf("set: %+v", all)
+	}
+	var none DevInfo
+	if none.Suspended() || none.ReadOnly() || none.ActivePresent() || none.InactivePresent() {
+		t.Fatalf("clear: %+v", none)
+	}
+}
+
 // TestInfoMajorMinor checks the dev_t decoding against a known huge-dev_t.
 func TestInfoMajorMinor(t *testing.T) {
 	// major 253, minor 0 -> huge dev_t = (253<<8)|0 = 0xfd00 within low 32 bits

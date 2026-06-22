@@ -13,8 +13,6 @@ import (
 	"runtime"
 	"strconv"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 // controlPath is the device-mapper control node. All DM_* ioctls go through it.
@@ -27,7 +25,7 @@ var ErrUnsupported = errors.New("dm: DM_* ioctls are only supported on Linux")
 // Available reports whether the device-mapper control node exists and can be
 // opened. It does not require root, but every mutating operation does.
 func Available() bool {
-	f, err := os.OpenFile(controlPath, os.O_RDWR, 0)
+	f, err := osOpenFile(controlPath, os.O_RDWR, 0)
 	if err != nil {
 		return false
 	}
@@ -92,13 +90,13 @@ func (buf *buffer) setUUID(uuid string) error {
 // header has been updated in place by the kernel. The buffer must not be moved
 // by the GC across the syscall; we keep it alive explicitly.
 func (buf *buffer) ioctl(req uintptr) error {
-	f, err := os.OpenFile(controlPath, os.O_RDWR, 0)
+	f, err := osOpenFile(controlPath, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("dm: open %s: %w", controlPath, err)
 	}
 	defer f.Close()
 
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), req, uintptr(unsafe.Pointer(&buf.b[0])))
+	errno := syscallIoctl(f.Fd(), req, buf.b)
 	runtime.KeepAlive(buf.b)
 	if errno != 0 {
 		return errno
