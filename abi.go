@@ -262,13 +262,37 @@ type structDMNameList struct {
 // at offset 12 regardless.
 const dmNameListHeadSize = 12
 
+// structDMTargetVersions mirrors the fixed head of struct dm_target_versions
+// from dm-ioctl.h, the record DM_LIST_VERSIONS returns once per registered
+// target type. The variable-length name[] follows at runtime.
+//
+//	struct dm_target_versions {
+//		__u32 next;        // byte offset from this record to the next, 0 = last
+//		__u32 version[3];  // {major, minor, patch} of the target type
+//		char  name[];      // NUL-terminated target type name
+//	};
+//
+// Unlike dm_name_list, every member here is 32-bit, so the Go struct's size
+// (16) equals the C offset of name[]; we still spell the head size out
+// explicitly as dmTargetVersionsHeadSize to keep the dependence on the C layout
+// (not Go's) clear.
+type structDMTargetVersions struct {
+	Next    uint32
+	Version [3]uint32
+}
+
+// dmTargetVersionsHeadSize is the offset of the flexible name[] member within
+// struct dm_target_versions in C: after next + version[3], at byte 16.
+const dmTargetVersionsHeadSize = 16
+
 // abiSizeof* are recorded so abi_test.go can pin them against the kernel's C
 // sizeof() values on a 64-bit kernel.
 var (
-	abiSizeofDMIoctl      = unsafe.Sizeof(structDMIoctl{})
-	abiSizeofDMTargetSpec = unsafe.Sizeof(structDMTargetSpec{})
-	abiSizeofDMNameList   = unsafe.Sizeof(structDMNameList{})
-	abiSizeofDMTargetMsg  = unsafe.Sizeof(structDMTargetMsg{})
+	abiSizeofDMIoctl          = unsafe.Sizeof(structDMIoctl{})
+	abiSizeofDMTargetSpec     = unsafe.Sizeof(structDMTargetSpec{})
+	abiSizeofDMNameList       = unsafe.Sizeof(structDMNameList{})
+	abiSizeofDMTargetMsg      = unsafe.Sizeof(structDMTargetMsg{})
+	abiSizeofDMTargetVersions = unsafe.Sizeof(structDMTargetVersions{})
 )
 
 // align8 rounds n up to the next multiple of 8, matching the alignment
@@ -359,6 +383,36 @@ func parseNameList(b []byte, dataStart int) ([]Device, error) {
 		off += int(rec.Next)
 	}
 	return devs, nil
+}
+
+// parseTargetVersions walks the struct dm_target_versions chain that
+// DM_LIST_VERSIONS returns. Each record is {u32 next; u32 version[3];
+// char name[]}; next is the byte offset from the start of this record to the
+// next, or 0 for the last. The list is empty when the first record has an empty
+// name (the kernel emits a single zeroed record). This is pure byte walking, so
+// it is platform-independent and unit-tested on the host.
+func parseTargetVersions(b []byte, dataStart int) ([]TargetVersion, error) {
+	headSize := dmTargetVersionsHeadSize // 16: offset of name[] in the C struct
+	var out []TargetVersion
+	off := dataStart
+	for {
+		if off+headSize > len(b) {
+			break
+		}
+		rec := *(*structDMTargetVersions)(unsafe.Pointer(&b[off]))
+		name := cstr(b[off+headSize:])
+		if name != "" {
+			out = append(out, TargetVersion{
+				Name:    name,
+				Version: DMVersion{Major: rec.Version[0], Minor: rec.Version[1], Patch: rec.Version[2]},
+			})
+		}
+		if rec.Next == 0 {
+			break
+		}
+		off += int(rec.Next)
+	}
+	return out, nil
 }
 
 // cstr returns the Go string for the NUL-terminated byte slice b (up to the

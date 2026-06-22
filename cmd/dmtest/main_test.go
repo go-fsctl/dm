@@ -21,12 +21,14 @@ func restore() func() {
 	f, g, h, i, j := createReadOnlyWithTable, snapshotStatus, thinPoolCreateThin, thinPoolCreateSnap, thinPoolDeleteThin
 	k, l, m, n, o := thinPoolStatus, thinStatus, message, status, info
 	p, q, r := tableStatus, list, remove
+	lv, dw := listVersions, devWait
 	x, so, se := osExit, stdout, stderr
 	return func() {
 		version, create, loadTable, resume, createWithTable = a, b, c, d, e
 		createReadOnlyWithTable, snapshotStatus, thinPoolCreateThin, thinPoolCreateSnap, thinPoolDeleteThin = f, g, h, i, j
 		thinPoolStatus, thinStatus, message, status, info = k, l, m, n, o
 		tableStatus, list, remove = p, q, r
+		listVersions, devWait = lv, dw
 		osExit, stdout, stderr = x, so, se
 	}
 }
@@ -51,6 +53,10 @@ func happy() {
 	tableStatus = func(string) ([]dm.Target, error) { return []dm.Target{dm.Zero(0, 2048)}, nil }
 	list = func() ([]dm.Device, error) { return []dm.Device{{Name: "vol", Dev: 5}}, nil }
 	remove = func(string) error { return nil }
+	listVersions = func() ([]dm.TargetVersion, error) {
+		return []dm.TargetVersion{{Name: "raid", Version: dm.DMVersion{Major: 1, Minor: 15}}}, nil
+	}
+	devWait = func(string, uint32) (dm.DevInfo, error) { return dm.DevInfo{Name: "vol", EventNr: 7}, nil }
 }
 
 // runWith captures stdout/stderr and runs the command.
@@ -90,6 +96,18 @@ var okCmds = [][]string{
 	{"message", "vol", "0", "create_thin", "0"},
 	{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "256", "0", "sha256", "abcd", "-", "2048"},
 	{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "256", "0", "sha256", "abcd", "-", "2048", "ignore_zero_blocks"},
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048"},
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048", "/dev/loop1", "0", "100"},
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048", "/dev/loop1", "0", "100", "253:5", "0", "0"},
+	{"flakey", "vol", "/dev/loop0", "0", "8", "4", "2048"},
+	{"flakey", "vol", "/dev/loop0", "0", "8", "4", "2048", "drop_writes"},
+	{"raid", "vol", "raid1", "262144", "1", "128", "2", "-", "/dev/loop0", "-", "/dev/loop1"},
+	{"cache", "vol", "/dev/loop0", "/dev/loop1", "/dev/loop2", "128", "smq", "1048576"},
+	{"cache", "vol", "/dev/loop0", "/dev/loop1", "/dev/loop2", "128", "smq", "1048576", "writethrough"},
+	{"integrity", "vol", "/dev/loop0", "0", "4", "J", "2048"},
+	{"integrity", "vol", "/dev/loop0", "0", "-", "J", "2048", "internal_hash:crc32c"},
+	{"versions"},
+	{"devwait", "vol", "0"},
 	{"status", "vol"},
 	{"info", "vol"},
 	{"table", "vol"},
@@ -144,6 +162,12 @@ var tooFew = [][]string{
 	{"thinstatus"},
 	{"message", "vol"},
 	{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "256", "0", "sha256", "abcd", "-"},
+	{"delay", "vol", "/dev/loop0", "0", "50"},
+	{"flakey", "vol", "/dev/loop0", "0", "8", "4"},
+	{"raid", "vol", "raid1", "262144", "1"},
+	{"cache", "vol", "/dev/loop0", "/dev/loop1", "/dev/loop2", "128", "smq"},
+	{"integrity", "vol", "/dev/loop0", "0", "4", "J"},
+	{"devwait", "vol"},
 	{"status"},
 	{"info"},
 	{"table"},
@@ -170,6 +194,35 @@ func TestStripedOddRest(t *testing.T) {
 	// odd number in the variadic tail (3 trailing tokens).
 	if rc, _, _ := runWith("striped", "vol", "256", "4096", "/dev/loop0", "0", "/dev/loop1"); rc != exitUsage {
 		t.Fatalf("rc=%d, want usage", rc)
+	}
+}
+
+// TestRaidCountShortfalls covers the raid case's two count-derived usage
+// branches: a #raid_params that overruns the supplied tokens, and a #raid_devs
+// that demands more device tokens than were given.
+func TestRaidCountShortfalls(t *testing.T) {
+	defer restore()()
+	happy()
+	// #params = 9 but far fewer param tokens present -> pEnd overruns args, so
+	// there is no room for the #devs token either (len(args) < pEnd+1).
+	if rc, _, _ := runWith("raid", "vol", "raid1", "262144", "9", "128"); rc != exitUsage {
+		t.Fatalf("params overrun: rc=%d, want usage", rc)
+	}
+	// #devs = 2 but only one (meta,data) pair present.
+	if rc, _, _ := runWith("raid", "vol", "raid1", "262144", "1", "128", "2", "-", "/dev/loop0"); rc != exitUsage {
+		t.Fatalf("devs overrun: rc=%d, want usage", rc)
+	}
+}
+
+// TestDelayFlushWithoutWrite covers the dmtest delay path where a flush leg is
+// supplied without a write leg; Delay degrades to the 3-arg form and the
+// command still succeeds.
+func TestDelayFlushWithoutWriteCLI(t *testing.T) {
+	defer restore()()
+	happy()
+	// 6 args triggers neither the >=10 write branch nor the >=13 flush branch.
+	if rc, _, errOut := runWith("delay", "vol", "/dev/loop0", "0", "50", "2048"); rc != exitOK {
+		t.Fatalf("rc=%d, want ok (stderr=%q)", rc, errOut)
 	}
 }
 
@@ -205,6 +258,25 @@ var badParse = [][]string{
 	{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "xx", "0", "sha256", "abcd", "-", "2048"},   // bad ndb
 	{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "256", "xx", "sha256", "abcd", "-", "2048"}, // bad hsb
 	{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "256", "0", "sha256", "abcd", "-", "xx"},    // bad sectors
+	{"delay", "vol", "/dev/loop0", "xx", "50", "2048"},                                                             // bad off
+	{"delay", "vol", "/dev/loop0", "0", "xx", "2048"},                                                              // bad delay
+	{"delay", "vol", "/dev/loop0", "0", "50", "xx"},                                                                // bad sectors
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048", "/dev/loop1", "xx", "100"},                                   // bad woff
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048", "/dev/loop1", "0", "xx"},                                     // bad wdelay
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048", "/dev/loop1", "0", "100", "253:5", "xx", "0"},                // bad foff
+	{"delay", "vol", "/dev/loop0", "0", "50", "2048", "/dev/loop1", "0", "100", "253:5", "0", "xx"},                // bad fdelay
+	{"flakey", "vol", "/dev/loop0", "xx", "8", "4", "2048"},                                                        // bad off
+	{"flakey", "vol", "/dev/loop0", "0", "xx", "4", "2048"},                                                        // bad up
+	{"flakey", "vol", "/dev/loop0", "0", "8", "xx", "2048"},                                                        // bad down
+	{"flakey", "vol", "/dev/loop0", "0", "8", "4", "xx"},                                                           // bad sectors
+	{"raid", "vol", "raid1", "xx", "1", "128", "2", "-", "/dev/loop0", "-", "/dev/loop1"},                          // bad sectors
+	{"raid", "vol", "raid1", "262144", "xx", "128", "2", "-", "/dev/loop0", "-", "/dev/loop1"},                     // bad #params
+	{"raid", "vol", "raid1", "262144", "1", "128", "xx", "-", "/dev/loop0", "-", "/dev/loop1"},                     // bad #devs
+	{"cache", "vol", "/dev/loop0", "/dev/loop1", "/dev/loop2", "xx", "smq", "1048576"},                             // bad block
+	{"cache", "vol", "/dev/loop0", "/dev/loop1", "/dev/loop2", "128", "smq", "xx"},                                 // bad sectors
+	{"integrity", "vol", "/dev/loop0", "xx", "4", "J", "2048"},                                                     // bad reserved
+	{"integrity", "vol", "/dev/loop0", "0", "4", "J", "xx"},                                                        // bad sectors
+	{"devwait", "vol", "xx"}, // bad eventnr
 }
 
 func TestBadParseArgs(t *testing.T) {
@@ -246,6 +318,13 @@ func TestCommandErrors(t *testing.T) {
 		{"thinstatus", []string{"thinstatus", "vol"}, func() { thinStatus = func(string) (dm.ThinStat, error) { return dm.ThinStat{}, errBoom } }},
 		{"message", []string{"message", "vol", "0", "ping"}, func() { message = func(string, uint64, string) (string, error) { return "", errBoom } }},
 		{"verity", []string{"verity", "vol", "1", "/dev/loop0", "/dev/loop1", "4096", "4096", "256", "0", "sha256", "abcd", "-", "2048"}, func() { createReadOnlyWithTable = func(string, []dm.Target) error { return errBoom } }},
+		{"delay", []string{"delay", "vol", "/dev/loop0", "0", "50", "2048"}, func() { createWithTable = func(string, []dm.Target) error { return errBoom } }},
+		{"flakey", []string{"flakey", "vol", "/dev/loop0", "0", "8", "4", "2048"}, func() { createWithTable = func(string, []dm.Target) error { return errBoom } }},
+		{"raid", []string{"raid", "vol", "raid1", "262144", "1", "128", "2", "-", "/dev/loop0", "-", "/dev/loop1"}, func() { createWithTable = func(string, []dm.Target) error { return errBoom } }},
+		{"cache", []string{"cache", "vol", "/dev/loop0", "/dev/loop1", "/dev/loop2", "128", "smq", "1048576"}, func() { createWithTable = func(string, []dm.Target) error { return errBoom } }},
+		{"integrity", []string{"integrity", "vol", "/dev/loop0", "0", "4", "J", "2048"}, func() { createWithTable = func(string, []dm.Target) error { return errBoom } }},
+		{"versions", []string{"versions"}, func() { listVersions = func() ([]dm.TargetVersion, error) { return nil, errBoom } }},
+		{"devwait", []string{"devwait", "vol", "0"}, func() { devWait = func(string, uint32) (dm.DevInfo, error) { return dm.DevInfo{}, errBoom } }},
 		{"status", []string{"status", "vol"}, func() { status = func(string) ([]dm.Target, error) { return nil, errBoom } }},
 		{"info", []string{"info", "vol"}, func() { info = func(string) (dm.DevInfo, error) { return dm.DevInfo{}, errBoom } }},
 		{"table", []string{"table", "vol"}, func() { tableStatus = func(string) ([]dm.Target, error) { return nil, errBoom } }},
@@ -285,7 +364,8 @@ func TestMainInvokesRun(t *testing.T) {
 // them against the kernel; the root integration test does that.
 func TestDefaultSeams(t *testing.T) {
 	defer restore()()
-	if version == nil || create == nil || list == nil || remove == nil {
+	if version == nil || create == nil || list == nil || remove == nil ||
+		listVersions == nil || devWait == nil {
 		t.Fatal("default seams must be wired to the dm package")
 	}
 }

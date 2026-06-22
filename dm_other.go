@@ -59,6 +59,12 @@ func List() ([]Device, error) { return nil, ErrUnsupported }
 // Message is unsupported off Linux.
 func Message(name string, sector uint64, msg string) (string, error) { return "", ErrUnsupported }
 
+// ListVersions is unsupported off Linux.
+func ListVersions() ([]TargetVersion, error) { return nil, ErrUnsupported }
+
+// DevWait is unsupported off Linux.
+func DevWait(name string, eventNr uint32) (DevInfo, error) { return DevInfo{}, ErrUnsupported }
+
 // Linear constructs a "linear" Target. It works on every platform since it only
 // builds a value; only the kernel operations are Linux-only.
 func Linear(sectorStart, length uint64, dev string, devOffset uint64) Target {
