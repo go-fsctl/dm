@@ -1,8 +1,11 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-fsctl/brand/main/social/go-fsctl-dm.png" alt="go-fsctl/dm" width="720"></p>
+
 # go-fsctl/dm
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-fsctl/dm.svg)](https://pkg.go.dev/github.com/go-fsctl/dm)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![CI](https://github.com/go-fsctl/dm/actions/workflows/ci.yml/badge.svg)](https://github.com/go-fsctl/dm/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/go-fsctl/dm/actions/workflows/ci.yml)
 
 Pure-Go control of the Linux **device-mapper** subsystem, driven directly
 through the `/dev/mapper/control` character device and the `DM_*` ioctls.
