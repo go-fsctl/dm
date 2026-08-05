@@ -92,6 +92,16 @@ dm.Verity(0, n, dm.VerityParams{Version: 1, DataDev: "/dev/data", HashDev: "/dev
 	DataBlockSize: 4096, HashBlockSize: 4096, NumDataBlocks: n/8, HashStartBlock: 1,
 	Algorithm: "sha256", RootDigest: root, Salt: salt})
 	// verity: <ver> <data> <hash> <dbs> <hbs> <ndb> <hsb> <algo> <root> <salt> [<#opt> <opt>...]
+dm.Delay(0, n, dm.DelayLeg{Dev: "/dev/loop0", Offset: 0, Delay: 50}, nil, nil)
+	// delay: <dev> <offset> <delay_ms> [<write_dev> <write_off> <write_delay> [<flush_dev> <flush_off> <flush_delay>]]
+dm.Flakey(0, n, "/dev/loop0", 0, 8, 4, []string{"drop_writes"})
+	// flakey: <dev> <offset> <up_secs> <down_secs> [<#feature> <feature>...]
+dm.Raid(0, n, "raid1", []string{"128"}, []dm.RaidDev{{Meta: "-", Data: "/dev/loop0"}, {Meta: "-", Data: "/dev/loop1"}})
+	// raid: <type> <#params> <params...> <#devs> <meta0> <data0> [<meta1> <data1> ...]
+dm.Cache(0, n, "/dev/meta", "/dev/cache", "/dev/origin", 128, []string{"writethrough"}, "smq", nil)
+	// cache: <meta> <cache> <origin> <block_sectors> <#feature> <feature>... <policy> <#policy_arg> <policy_arg>...
+dm.Integrity(0, n, "/dev/loop0", 0, "4", "J", nil)
+	// integrity: <dev> <reserved_sectors> <tag_size> <mode> [<#opt> <opt>...]
 ```
 
 Each constructor only assembles the table line — the kernel does the striping,
@@ -161,6 +171,23 @@ flips `ParseVerityStatus` from `"V"` to `"C"`. Optional `Opts` (e.g.
 `ignore_zero_blocks`) and forward error correction (`VerityFEC`) are folded into
 the table's optional-argument list.
 
+### Other targets and introspection
+
+`Delay` and `Flakey` are test targets useful for exercising I/O timing and
+fault-tolerance (delayed/flapping devices); `Raid` drives the kernel's
+`dm-raid` personality (raid0/1/4/5\*/6\*/10) over metadata+data device pairs
+(`RaidDev`); `Cache` builds `dm-cache` (fast cache device in front of a slow
+origin, under a pluggable replacement policy); `Integrity` builds
+`dm-integrity` (per-block checksums/MACs over a backing device formatted with
+`integritysetup format`). Each is pure param-string assembly like the other
+constructors above, so it builds and unit-tests on every platform.
+
+`ListVersions()` enumerates every target type the running kernel has
+registered, with its module's version triple (`DM_LIST_VERSIONS`). `DevWait`
+blocks until a device's event counter advances past `eventNr`, then returns
+its `DevInfo` (`DM_DEV_WAIT`) — the same wait dmsetup/dmeventd use to react to
+table reloads, suspend/resume, or an underlying failure.
+
 ## API
 
 | Function | ioctl | Purpose |
@@ -176,17 +203,20 @@ the table's optional-argument list.
 | `Suspend(name string) error`             | `DM_DEV_SUSPEND`  | suspend IO (`DM_SUSPEND_FLAG` set) |
 | `Resume(name string) error`              | `DM_DEV_SUSPEND`  | resume / activate (flag clear) |
 | `Info(name string) (DevInfo, error)`     | `DM_DEV_STATUS`   | dev_t, open count, flags, target count |
+| `DevWait(name string, eventNr uint32) (DevInfo, error)` | `DM_DEV_WAIT` | block until the device's event count advances past `eventNr` |
 | `TableStatus(name string) ([]Target, _)` | `DM_TABLE_STATUS` | read back the active table |
 | `Status(name string) ([]Target, _)`      | `DM_TABLE_STATUS` | read back per-target runtime status |
 | `List() ([]Device, error)`               | `DM_LIST_DEVICES` | enumerate all dm devices |
+| `ListVersions() ([]TargetVersion, _)`    | `DM_LIST_VERSIONS` | enumerate registered target types + their module version |
 | `Remove(name string) error`              | `DM_DEV_REMOVE`   | remove device, destroy tables |
 
 `Linear`, `Striped`, `Zero`, `Error`, `Snapshot`, `SnapshotOrigin`, `Crypt`,
-`ThinPool`, `Thin` and `Verity` are convenience constructors for the
-corresponding kernel targets; they build a `Target` value and so work on every
-platform. `SnapshotStatus`, `ThinPoolStatus`, `ThinStatus` (and the matching
-`Parse*Status` functions) decode the targets' runtime status; the `ThinPool*`
-helpers wrap `Message` for thin/snapshot lifecycle.
+`ThinPool`, `Thin`, `Verity`, `Delay`, `Flakey`, `Raid`, `Cache` and
+`Integrity` are convenience constructors for the corresponding kernel targets;
+they build a `Target` value and so work on every platform. `SnapshotStatus`,
+`ThinPoolStatus`, `ThinStatus` (and the matching `Parse*Status` functions)
+decode the targets' runtime status; the `ThinPool*` helpers wrap `Message` for
+thin/snapshot lifecycle.
 
 On non-Linux platforms every kernel operation returns `ErrUnsupported`, while
 the ABI definitions and the target-spec (de)serialization in `abi.go` remain
