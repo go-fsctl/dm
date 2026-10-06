@@ -25,9 +25,9 @@ import (
 //
 // _IOWR(type, nr, size) lays out as:
 //
-//	(dir << 30) | (size << 16) | (type << 8) | nr
+//	(dir << iocDirShift) | (size << 16) | (type << 8) | nr
 //
-// with dir = 3 (read|write) for every DM command, type = 0xfd, and size =
+// with dir = read|write for every DM command, type = 0xfd, and size =
 // sizeof(struct dm_ioctl). The size field is part of the request number, so it
 // must match the kernel's notion of sizeof(struct dm_ioctl) exactly; that is
 // pinned by abi_test.go against the documented layout.
@@ -35,19 +35,23 @@ import (
 // dmIOCTL is the device-mapper ioctl type byte (DM_IOCTL in dm-ioctl.h).
 const dmIOCTL = 0xfd
 
-// _IOC direction bits, matching the asm-generic ioctl encoding used on all the
-// architectures device-mapper runs on (the generic layout is shared by x86,
-// arm64, etc.; mips/parisc/sparc/alpha use a different one, which device-mapper
-// userspace also handles via these same generic numbers in practice).
+// _IOC field layout. The nr and type fields are the same everywhere; the width
+// of the size field and the values of the direction bits are not. Most
+// architectures (x86, arm, arm64, riscv64, loong64, s390x) use the asm-generic
+// layout -- 14 size bits, 2 dir bits, NONE=0 WRITE=1 READ=2 -- while powerpc
+// and mips define their own in arch/{powerpc,mips}/include/uapi/asm/ioctl.h:
+// 13 size bits, 3 dir bits, NONE=1 READ=2 WRITE=4. Those per-architecture
+// constants live in ioclayout_generic.go and ioclayout_ppcmips.go.
+//
+// Every DM_* request is _IOWR, and READ|WRITE is the same bit pattern in both
+// layouts (3<<30 == 6<<29), so the DM_* numbers themselves come out identical
+// as long as sizeof(struct dm_ioctl) fits in 13 bits. That is a coincidence of
+// the arithmetic, not a reason to encode with the wrong layout: _IO, _IOR and
+// _IOW requests built with the asm-generic values are wrong on powerpc and
+// mips.
 const (
-	iocNone  = 0
-	iocWrite = 1
-	iocRead  = 2
-
 	iocNRBits   = 8
 	iocTypeBits = 8
-	iocSizeBits = 14
-	iocDirBits  = 2
 
 	iocNRShift   = 0
 	iocTypeShift = iocNRShift + iocNRBits

@@ -21,6 +21,10 @@ import (
 //	dir 3<<30 == 0xC000_0000
 //
 // => base 0xC138_FD00 + cmd
+//
+// The same values hold on powerpc and mips: their READ|WRITE is 6<<29, the
+// same bits as 3<<30, and 312 fits in their 13-bit size field.
+// TestIocAgainstXSys covers the directions where the layouts differ.
 func TestDMIoctlNumbers(t *testing.T) {
 	if dmIOCTLSize != 312 {
 		t.Fatalf("sizeof(struct dm_ioctl) = %d, want 312; ioctl numbers below assume 312", dmIOCTLSize)
